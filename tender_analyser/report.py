@@ -46,11 +46,12 @@ def _table(ws, headers: list[str], rows: list[list], widths: list[int], start_ro
         ws.auto_filter.ref = f"A{start_row}:{get_column_letter(len(headers))}{start_row + len(rows)}"
 
 
-def _summary(ws, a: TenderAnalysis, today: date) -> None:
+def _summary(ws, a: TenderAnalysis, today: date, method: str = "Rule-based extraction") -> None:
     ws.title = "Summary"
     ws["A1"] = "Tender analysis"
     ws["A1"].font = TITLE_FONT
-    ws["A2"] = f"Generated {today:%d/%m/%Y} from {a.source} — automatic extraction, verify against the source document."
+    ws["A2"] = (f"Generated {today:%d/%m/%Y} from {a.source} — {method.lower()}, "
+                "verify against the source document.")
     ws["A2"].font = Font(italic=True, color="666666")
 
     sub = a.submission_deadline
@@ -63,9 +64,10 @@ def _summary(ws, a: TenderAnalysis, today: date) -> None:
 
     counts = {lvl: sum(1 for r in a.requirements if r.level == lvl) for lvl in LEVEL_FILLS}
     rows = [
+        ("Analysis method", method),
         ("Source file", a.source),
         ("Pages", a.pages),
-        ("Language", {"FR": "French", "NL": "Dutch", "EN": "English"}.get(a.language, a.language)),
+        ("Language", {"FR": "French", "NL": "Dutch", "EN": "English", "DE": "German"}.get(a.language, a.language)),
         *[(k, v) for k, v in a.info.items()],
         ("Submission deadline", sub_txt),
         ("Lots", len(a.lots) or a.lots_note or "None found"),
@@ -86,10 +88,76 @@ def _summary(ws, a: TenderAnalysis, today: date) -> None:
     ws.column_dimensions["B"].width = 90
 
 
-def write_report(a: TenderAnalysis, out_path: str | Path, today: date | None = None) -> Path:
+def _bid_assessment(wb: Workbook, ai) -> None:
+    b = ai.insights
+    ws = wb.create_sheet("Bid assessment", 1)
+    ws["A1"] = "Bid assessment (AI-generated — review before deciding)"
+    ws["A1"].font = TITLE_FONT
+    colors = {"Go": "C6EFCE", "Go with conditions": "FFEB9C", "No-go": "FFC7CE"}
+    row = 3
+
+    def label(text):
+        nonlocal row
+        ws.cell(row=row, column=1, value=text).font = LABEL_FONT
+        return ws.cell(row=row, column=1)
+
+    def put(text, value):
+        nonlocal row
+        label(text)
+        c = ws.cell(row=row, column=2, value=value)
+        c.alignment = WRAP
+        row += 1
+        return c
+
+    c = put("Recommendation", b.recommendation)
+    c.font = Font(bold=True, size=13)
+    if b.recommendation in colors:
+        c.fill = PatternFill("solid", fgColor=colors[b.recommendation])
+    put("Why", b.recommendation_rationale)
+    put("Executive summary", b.executive_summary)
+    for title, items in [("Scope", b.scope_summary), ("Key risks", b.key_risks),
+                         ("Next actions", b.next_actions),
+                         ("Questions for the buyer", b.clarification_questions)]:
+        put(title, "\n".join(f"• {x}" for x in items) if items else "—")
+
+    row += 1
+    if b.fit_assessment:
+        ws.cell(row=row, column=1, value="Fit against company profile").font = LABEL_FONT
+        row += 1
+        for col, h in enumerate(["Requirement", "Status", "Rationale"], start=1):
+            cell = ws.cell(row=row, column=col, value=h)
+            cell.fill, cell.font, cell.border = HEADER_FILL, HEADER_FONT, BORDER
+        fit_colors = {"Met": "C6EFCE", "Gap": "FFC7CE", "Unknown": "EDEDED"}
+        for f in b.fit_assessment:
+            row += 1
+            for col, v in enumerate([f.requirement, f.status, f.rationale], start=1):
+                cell = ws.cell(row=row, column=col, value=v)
+                cell.alignment, cell.border = WRAP, BORDER
+            ws.cell(row=row, column=2).fill = PatternFill("solid", fgColor=fit_colors[f.status])
+    else:
+        put("Fit against company profile", "No company profile provided (use --profile).")
+
+    if ai.run:
+        row += 2
+        r = ai.run
+        cost = r.estimated_cost_usd
+        put("Model", r.served_by or r.model)
+        put("Tokens", f"{r.input_tokens:,} input + {r.cache_write_tokens:,} cache write + "
+                      f"{r.cache_read_tokens:,} cache read, {r.output_tokens:,} output")
+        if cost is not None:
+            put("Estimated API cost", f"≈ ${cost:.2f}")
+    ws.column_dimensions["A"].width = 34
+    ws.column_dimensions["B"].width = 110
+    ws.column_dimensions["C"].width = 70
+
+
+def write_report(a: TenderAnalysis, out_path: str | Path, today: date | None = None, ai=None) -> Path:
+    """Write the workbook. `ai` is an optional ai.AIResult adding the bid assessment and AI columns."""
     today = today or date.today()
     wb = Workbook()
-    _summary(wb.active, a, today)
+    _summary(wb.active, a, today, "AI analysis (Claude)" if ai else "Rule-based extraction")
+    if ai:
+        _bid_assessment(wb, ai)
 
     # Deadlines
     ws = wb.create_sheet("Deadlines")
@@ -112,28 +180,39 @@ def write_report(a: TenderAnalysis, out_path: str | Path, today: date | None = N
 
     # Award criteria
     ws = wb.create_sheet("Award criteria")
-    _table(ws, ["Criterion", "Weight", "Page", "Section", "KEYES win theme / proof points"],
-           [[c.criterion, c.weight, c.page, c.section, ""] for c in a.award_criteria], [50, 12, 7, 35, 60])
+    if ai and ai.award_details:
+        _table(ws, ["Criterion", "Weight", "Page", "Scoring method", "Suggested win theme (AI)",
+                    "KEYES win theme / proof points"],
+               [[c.criterion, c.weight, c.page, c.scoring_method, c.win_theme, ""] for c in ai.award_details],
+               [35, 10, 7, 60, 60, 50])
+    else:
+        _table(ws, ["Criterion", "Weight", "Page", "Section", "KEYES win theme / proof points"],
+               [[c.criterion, c.weight, c.page, c.section, ""] for c in a.award_criteria], [50, 12, 7, 35, 60])
 
     # Compliance matrix
     ws = wb.create_sheet("Compliance matrix")
-    headers = ["ID", "Requirement", "Category", "Level", "Doc?", "Page", "Section",
-               "Status", "Owner", "KEYES response / evidence", "Comments"]
-    rows = [[r.id, r.text, r.category, r.level, "Yes" if r.is_document else "", r.page, r.section,
-             "To review", "", "", ""] for r in a.requirements]
-    _table(ws, headers, rows, [9, 80, 22, 11, 6, 6, 28, 18, 14, 50, 30])
+    summaries = ai.requirement_summaries if ai else {}
+    headers = ["ID", "Requirement"] + (["Summary (EN)"] if summaries else []) + [
+        "Category", "Level", "Doc?", "Page", "Section", "Status", "Owner", "KEYES response / evidence", "Comments"]
+    rows = [[r.id, r.text] + ([summaries.get(r.id, "")] if summaries else []) +
+            [r.category, r.level, "Yes" if r.is_document else "", r.page, r.section, "To review", "", "", ""]
+            for r in a.requirements]
+    widths = [9, 80] + ([45] if summaries else []) + [22, 11, 6, 6, 28, 18, 14, 50, 30]
+    _table(ws, headers, rows, widths)
+    level_col = headers.index("Level") + 1
+    status = get_column_letter(headers.index("Status") + 1)
     for i, r in enumerate(a.requirements, start=2):
-        ws.cell(row=i, column=4).fill = LEVEL_FILLS[r.level]
+        ws.cell(row=i, column=level_col).fill = LEVEL_FILLS[r.level]
     if rows:
         last = len(rows) + 1
         dv = DataValidation(type="list", formula1='"' + ",".join(STATUS_OPTIONS) + '"', allow_blank=True)
         ws.add_data_validation(dv)
-        dv.add(f"H2:H{last}")
-        rng = f"H2:H{last}"
+        rng = f"{status}2:{status}{last}"
+        dv.add(rng)
         for text, color in [("Compliant", "C6EFCE"), ("Partially compliant", "FFEB9C"),
                             ("Non-compliant", "FFC7CE"), ("Not applicable", "EDEDED")]:
             ws.conditional_formatting.add(
-                rng, FormulaRule(formula=[f'$H2="{text}"'], fill=PatternFill("solid", fgColor=color)))
+                rng, FormulaRule(formula=[f'${status}2="{text}"'], fill=PatternFill("solid", fgColor=color)))
 
     # Documents to provide
     ws = wb.create_sheet("Documents to provide")

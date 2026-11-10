@@ -1,4 +1,6 @@
 pdfplumber>=0.10
 pypdf>=4.0
 openpyxl>=3.1
+anthropic>=2.8  # only for --ai / --ask
+pydantic>=2.0
 reportlab>=4.0  # only needed to regenerate the sample tender
