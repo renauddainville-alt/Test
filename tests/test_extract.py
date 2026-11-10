@@ -105,5 +105,53 @@ class DutchTender(unittest.TestCase):
         self.assertTrue(any("ISO 27001" in r.text for r in a.documents))
 
 
+# Invented text reproducing layout patterns seen in real Belgian tenders.
+LAYOUT_PAGES = [
+    "DOCUMENTS DE MARCHÉ\nX/Y/Z&W/C1/AB 1234\nUn slogan d’entreprise assez long pour tromper le titre\n"
+    "PROCÉDURE OUVERTE\nDATE DE DÉPÔT DES OFFRES : 3 MARS 2027 – 14H\n",
+    "Objet : Documents de marché n° X/Y/Z&W/C1/AB 1234\n"
+    "Fourniture de commutateurs réseau et support associé pour les deux centres de\n"
+    "données principaux\nTexte d’introduction.\n2\n",
+    "1. Entité adjudicatrice\nL’entité adjudicatrice est Exemple SA, société anonyme.\n"
+    "Le marché n’est pas divisé en lots.\n"
+    "Les soumissionnaires peuvent s’inscrire pour la visite au plus tard le 10 février\n2027. "
+    "Le délai d’engagement s’élèvera à au moins 120 jours calendrier.\n"
+    "Le soumissionnaire doit joindre deux références1 à son offre.\n"
+    "Le dépôt par un autre moyen sera considéré comme nul et non avenu.\n"
+    "Le bureau H.1.6.18 se trouve au premier étage.\n"
+    "1 Valeur minimale de la référence = 500.000 EUR, hors TVA\n3\n",
+]
+
+
+class LayoutPatterns(unittest.TestCase):
+    def setUp(self):
+        self.a = analyse_pages(LAYOUT_PAGES, "layout.pdf")
+
+    def test_info(self):
+        info = self.a.info
+        self.assertEqual(info["Reference"], "X/Y/Z&W/C1/AB 1234")
+        self.assertEqual(info["Title / object"], "Fourniture de commutateurs réseau et support associé pour "
+                                                 "les deux centres de données principaux")
+        self.assertEqual(info["Contracting authority"], "Exemple SA, société anonyme")
+        self.assertEqual(info["Offer validity"], "120 jours calendrier")
+        self.assertEqual(info["Procedure"], "Procédure ouverte")
+        self.assertEqual(self.a.lots_note, "Not divided into lots")
+
+    def test_dates(self):
+        self.assertEqual(self.a.submission_deadline.when, datetime(2027, 3, 3, 14, 0))
+        kinds = {d.kind: d.when.date() for d in self.a.deadlines}
+        self.assertEqual(kinds["Site visit / information session"], date(2027, 2, 10))
+        self.assertNotIn(date(2018, 6, 1), kinds.values())  # "H.1.6.18" is not a date
+
+    def test_footnotes_and_critical(self):
+        texts = {r.text: r for r in self.a.requirements}
+        self.assertTrue(any("nul et non avenu" in t and r.level == "Critical" for t, r in texts.items()))
+        fn = [r for r in self.a.requirements if "Valeur minimale" in r.text]
+        self.assertEqual(len(fn), 1)
+        self.assertTrue(fn[0].section.endswith("(footnote)"))
+        # Footnote must not have become a heading for the following text
+        self.assertTrue(all(not r.section.startswith("1 Valeur") for r in self.a.requirements))
+
+
 if __name__ == "__main__":
     unittest.main()

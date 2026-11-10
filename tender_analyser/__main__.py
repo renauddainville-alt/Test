@@ -42,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"  {'Submission deadline':<22} not found — check manually")
         crit = sum(r.level == "Critical" for r in a.requirements)
-        print(f"  {'Lots':<22} {len(a.lots)}")
+        print(f"  {'Lots':<22} {len(a.lots) or a.lots_note or 0}")
         print(f"  {'Award criteria':<22} {len(a.award_criteria)}")
         print(f"  {'Requirements':<22} {len(a.requirements)} ({crit} critical)")
         print(f"  {'Documents to provide':<22} {len(a.documents)}")

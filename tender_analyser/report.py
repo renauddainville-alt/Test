@@ -68,7 +68,7 @@ def _summary(ws, a: TenderAnalysis, today: date) -> None:
         ("Language", {"FR": "French", "NL": "Dutch", "EN": "English"}.get(a.language, a.language)),
         *[(k, v) for k, v in a.info.items()],
         ("Submission deadline", sub_txt),
-        ("Lots", len(a.lots) or "Single lot / none found"),
+        ("Lots", len(a.lots) or a.lots_note or "None found"),
         ("Award criteria found", len(a.award_criteria)),
         ("Requirements found", len(a.requirements)),
         ("  of which critical (exclusion risk)", counts["Critical"]),
