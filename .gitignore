@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+# Analyses of real tenders stay local
+*_analysis.xlsx
+!examples/sample_tender_fr_analysis.xlsx
